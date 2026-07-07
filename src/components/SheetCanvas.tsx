@@ -1,7 +1,7 @@
 import type { Cue, Project, Route, RoutePoint } from '../types'
 import { formatDistance, formatElevation, toMm } from '../types'
-import { colorForClimb, colorForGrade, gradePercent } from '../lib/grade'
-import { resampleProfile } from '../lib/profile'
+import { colorForClimb, colorForGrade, gradeColors, gradePercent } from '../lib/grade'
+import { profilePointsInRange, resampleProfile } from '../lib/profile'
 import { GRID_UNIT_MM, sheetGridSize } from '../lib/layout'
 
 interface Props {
@@ -10,9 +10,11 @@ interface Props {
   onSelect: (id: string) => void
 }
 
-function MiniProfile({ route, cue, cues }: { route: Route; cue: Extract<Cue, { kind: 'section' }>; cues: Cue[] }) {
-  const points = route.points.filter((point) => point.distanceKm >= cue.startKm && point.distanceKm <= cue.endKm && point.elevation !== undefined)
+export function MiniProfile({ route, cue, cues }: { route: Route; cue: Extract<Cue, { kind: 'section' }>; cues: Cue[] }) {
+  const routePoints = route.points.filter((point) => point.elevation !== undefined)
+  const points = profilePointsInRange(routePoints, cue.startKm, cue.endKm)
   if (points.length < 2) return null
+  const profileShading = cue.profileShading ?? (cue.colorByGrade ? 'grade' : 'none')
   const values = points.map((point) => point.elevation ?? 0)
   const min = Math.min(...values); const span = Math.max(1, Math.max(...values) - min)
   const startKm = points[0].distanceKm
@@ -47,7 +49,7 @@ function MiniProfile({ route, cue, cues }: { route: Route; cue: Extract<Cue, { k
   // mark every point cue with a vertical line and shade every section cue span.
   const isCourseProfile = cue.startKm <= 0.01 && cue.endKm >= route.distanceKm - 0.01
   const xForKm = (km: number) => ((km - startKm) / distanceSpan) * 100
-  const sectionShades = isCourseProfile && !cue.colorByGrade
+  const sectionShades = isCourseProfile && profileShading === 'none'
     ? cues.flatMap((item) => {
         if (item.kind !== 'section' || item.id === cue.id) return []
         const within = points.filter((point) => point.distanceKm >= item.startKm && point.distanceKm <= item.endKm)
@@ -55,6 +57,18 @@ function MiniProfile({ route, cue, cues }: { route: Route; cue: Extract<Cue, { k
         const color = colorForClimb((within.at(-1)!.elevation ?? 0) - (within[0].elevation ?? 0), within.at(-1)!.distanceKm - within[0].distanceKm).hex
         const shape = within.map(toCoordinate).map(({ x, y }) => `${x},${y}`).join(' ')
         return [<polygon className="section-shade" key={`shade-${item.id}`} style={{ fill: color }} points={`${xForKm(within[0].distanceKm)},100 ${shape} ${xForKm(within.at(-1)!.distanceKm)},100`} />]
+      })
+    : []
+  const manualFills = profileShading === 'manual'
+    ? (cue.manualShadingSegments ?? []).flatMap((segment) => {
+        const start = Math.max(cue.startKm, Math.min(segment.startKm, segment.endKm))
+        const end = Math.min(cue.endKm, Math.max(segment.startKm, segment.endKm))
+        if (end <= start) return []
+        const segmentPoints = profilePointsInRange(routePoints, start, end)
+        if (segmentPoints.length < 2) return []
+        const top = segmentPoints.map(toCoordinate).map(({ x, y }) => `${x},${y}`).join(' ')
+        const color = gradeColors[segment.color]?.hex ?? gradeColors.moderate.hex
+        return [{ id: segment.id, color, top, points: `${xForKm(start)},100 ${top} ${xForKm(end)},100` }]
       })
     : []
   const pointMarkers = isCourseProfile
@@ -65,15 +79,19 @@ function MiniProfile({ route, cue, cues }: { route: Route; cue: Extract<Cue, { k
         return [<line className="point-marker" key={`point-${item.id}`} x1={x} x2={x} y1="0" y2="100" />]
       })
     : []
-  const baseFills = cue.colorByGrade
+  const baseFills = profileShading === 'grade'
     ? gradeFills.map(({ points, color }, index) => <polygon className="grade-fill" key={`fill-${index}`} points={points} fill={color} />)
+    : profileShading === 'manual'
+    ? null
     : isCourseProfile
     ? null
     : <polygon points={`0,100 ${polyline} 100,100`} />
-  const baseLines = cue.colorByGrade
+  const manualFillEls = manualFills.map(({ id, points, color }) => <polygon className="manual-fill" key={`manual-fill-${id}`} points={points} fill={color} />)
+  const baseLines = profileShading === 'grade'
     ? gradeFills.map(({ top, color }, index) => <polyline key={`line-${index}`} points={top} style={{ stroke: color }} />)
     : <polyline points={polyline} />
-  return <svg className="mini-profile" viewBox="0 0 100 100" preserveAspectRatio="none">{baseFills}{sectionShades}{baseLines}{pointMarkers}</svg>
+  const manualLines = manualFills.map(({ id, top, color }) => <polyline className="manual-line" key={`manual-line-${id}`} points={top} style={{ stroke: color }} />)
+  return <svg className="mini-profile" viewBox="0 0 100 100" preserveAspectRatio="none">{baseFills}{sectionShades}{manualFillEls}{baseLines}{manualLines}{pointMarkers}</svg>
 }
 
 export function SheetCanvas({ project, selectedId, onSelect }: Props) {

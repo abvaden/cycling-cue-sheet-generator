@@ -16,6 +16,9 @@ export interface Route {
   hasElevation: boolean
 }
 
+export type ProfileShadingMode = 'none' | 'grade' | 'manual'
+export type ProfileShadeColor = 'descent' | 'easy' | 'moderate' | 'hard' | 'steep'
+
 export type Visibility = {
   title: boolean
   distance: boolean
@@ -57,6 +60,13 @@ export interface SectionCue extends CueBase {
   gradeMaxPercent: number
   gradeResolution: number
   overlayTextOnProfile: boolean
+  profileShading?: ProfileShadingMode
+  manualShadingSegments?: {
+    id: string
+    startKm: number
+    endKm: number
+    color: ProfileShadeColor
+  }[]
 }
 
 export interface PointCue extends CueBase {

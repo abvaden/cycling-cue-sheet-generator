@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import type { CSSProperties, KeyboardEvent, PointerEvent } from "react";
 import {
   AreaChart,
   Bike,
@@ -14,14 +15,16 @@ import {
   Plus,
   Save,
   Trash2,
+  X,
 } from "lucide-react";
 import { ElevationProfile } from "./components/ElevationProfile";
 import { RouteMap } from "./components/RouteMap";
-import { SheetCanvas } from "./components/SheetCanvas";
+import { MiniProfile, SheetCanvas } from "./components/SheetCanvas";
 import { parseGpxFile } from "./lib/gpx";
 import { GRID_UNIT_MM, flowGrid, nextGridPosition, sheetGridSize } from "./lib/layout";
 import { isElapsedDuration, normalizeElapsedDuration } from "./lib/duration";
 import { exportProjectPdf } from "./lib/pdf";
+import { gradeColors } from "./lib/grade";
 import {
   deleteProject,
   listProjects,
@@ -31,6 +34,8 @@ import {
 import type {
   Cue,
   PointCue,
+  ProfileShadeColor,
+  ProfileShadingMode,
   Project,
   ScalableField,
   SectionCue,
@@ -45,6 +50,38 @@ import {
 
 const now = () => new Date().toISOString();
 const id = () => crypto.randomUUID();
+const LEFT_PANEL_WIDTH_KEY = "rouleur:left-panel-width";
+const LEFT_PANEL_MIN_WIDTH = 240;
+const LEFT_PANEL_MAX_WIDTH = 900;
+const LEFT_PANEL_DEFAULT_WIDTH = 300;
+
+const clampLeftPanelWidth = (width: number) =>
+  Math.max(LEFT_PANEL_MIN_WIDTH, Math.min(LEFT_PANEL_MAX_WIDTH, width));
+
+const addMarkerDistance = (markers: number[], distanceKm: number) =>
+  [...markers, distanceKm].slice(-2);
+
+const PROFILE_SHADE_COLORS: ProfileShadeColor[] = [
+  "descent",
+  "easy",
+  "moderate",
+  "hard",
+  "steep",
+];
+
+const sectionShadingMode = (cue: SectionCue): ProfileShadingMode =>
+  cue.profileShading ?? (cue.colorByGrade ? "grade" : "none");
+
+const clamp = (value: number, min: number, max: number) =>
+  Math.max(min, Math.min(max, value));
+
+const readLeftPanelWidth = () => {
+  if (typeof window === "undefined") return LEFT_PANEL_DEFAULT_WIDTH;
+  const stored = Number(window.localStorage.getItem(LEFT_PANEL_WIDTH_KEY));
+  return Number.isFinite(stored)
+    ? clampLeftPanelWidth(stored)
+    : LEFT_PANEL_DEFAULT_WIDTH;
+};
 
 function freshProject(): Project {
   return {
@@ -138,8 +175,21 @@ export default function App() {
   const [projectSelected, setProjectSelected] = useState(false);
   const [projectsLoaded, setProjectsLoaded] = useState(false);
   const [orderMode, setOrderMode] = useState(false);
+  const [leftPanelWidth, setLeftPanelWidth] = useState(readLeftPanelWidth);
+  const [hoveredKm, setHoveredKm] = useState<number>();
+  const [markerDistances, setMarkerDistances] = useState<number[]>([]);
+  const [shadingModalCueId, setShadingModalCueId] = useState<string>();
+  const [shadingModalHoveredKm, setShadingModalHoveredKm] = useState<number>();
+  const [shadingModalMarkers, setShadingModalMarkers] = useState<number[]>([]);
   const uploadRef = useRef<HTMLInputElement>(null);
   const selected = project.cues.find((cue) => cue.id === selectedId);
+  const shadingModalCue = project.cues.find(
+    (cue): cue is SectionCue =>
+      cue.id === shadingModalCueId && cue.kind === "section",
+  );
+  const workspaceStyle = {
+    "--left-panel-width": `${leftPanelWidth}px`,
+  } as CSSProperties;
 
   useEffect(() => {
     listProjects()
@@ -171,6 +221,10 @@ export default function App() {
     }
   }, [saved]);
 
+  useEffect(() => {
+    window.localStorage.setItem(LEFT_PANEL_WIDTH_KEY, String(leftPanelWidth));
+  }, [leftPanelWidth]);
+
   const importRoute = async (file?: File) => {
     if (!file) return;
     try {
@@ -182,6 +236,7 @@ export default function App() {
         cues: [],
       }));
       setSelectedId(undefined);
+      setMarkerDistances([]);
       setError("");
     } catch (reason) {
       setError(
@@ -192,10 +247,12 @@ export default function App() {
 
   const addSection = () => {
     if (!project.route) return;
-    const startKm = Math.min(
-      pickedKm,
-      Math.max(0, project.route.distanceKm - 0.5),
-    );
+    const sectionMarkers = markerDistances.length >= 2
+      ? [...markerDistances].sort((a, b) => a - b)
+      : undefined;
+    const startKm = sectionMarkers
+      ? sectionMarkers[0]
+      : Math.min(pickedKm, Math.max(0, project.route.distanceKm - 0.5));
     const cue: SectionCue = {
       id: id(),
       order: project.cues.length,
@@ -206,14 +263,17 @@ export default function App() {
       note: "",
       noteBold: false,
       startKm,
-      endKm: Math.min(
-        project.route.distanceKm,
-        startKm + Math.max(0.5, project.route.distanceKm * 0.08),
-      ),
+      endKm: sectionMarkers
+        ? sectionMarkers[1]
+        : Math.min(
+            project.route.distanceKm,
+            startKm + Math.max(0.5, project.route.distanceKm * 0.08),
+          ),
       colorByGrade: false,
       gradeMaxPercent: 9,
       gradeResolution: 24,
       overlayTextOnProfile: false,
+      profileShading: "none",
       visibility: { ...defaultVisibility },
       grid: nextGridPosition(project.cues, 6, 3, sheetGridSize(project.sheet).columns),
     };
@@ -225,6 +285,7 @@ export default function App() {
       ).map((item, order) => ({ ...item, order })),
     }));
     setSelectedId(cue.id);
+    if (sectionMarkers) setMarkerDistances([]);
   };
 
   const addRouteProfile = () => {
@@ -244,6 +305,7 @@ export default function App() {
       gradeMaxPercent: 9,
       gradeResolution: 24,
       overlayTextOnProfile: false,
+      profileShading: "none",
       visibility: { ...defaultVisibility },
       grid: nextGridPosition(project.cues, 12, 4, sheetGridSize(project.sheet).columns),
     };
@@ -259,6 +321,7 @@ export default function App() {
 
   const addPoint = () => {
     if (!project.route) return;
+    const distanceKm = markerDistances.at(-1) ?? pickedKm;
     const cue: PointCue = {
       id: id(),
       order: project.cues.length,
@@ -268,7 +331,7 @@ export default function App() {
       title: "Aid station",
       note: "",
       noteBold: false,
-      distanceKm: pickedKm,
+      distanceKm,
       elapsed: "",
       horizontalLayout: false,
       visibility: { ...defaultVisibility, profile: false },
@@ -282,6 +345,7 @@ export default function App() {
       ).map((item, order) => ({ ...item, order })),
     }));
     setSelectedId(cue.id);
+    setMarkerDistances([]);
   };
 
   const patchCue = (patch: Partial<Cue>) =>
@@ -291,6 +355,98 @@ export default function App() {
         cue.id === selectedId ? ({ ...cue, ...patch } as Cue) : cue,
       ),
     }));
+  const patchSectionCue = (cueId: string, patch: Partial<SectionCue>) =>
+    setProject((current) => ({
+      ...current,
+      cues: current.cues.map((cue) =>
+        cue.id === cueId && cue.kind === "section"
+          ? ({ ...cue, ...patch } as SectionCue)
+          : cue,
+      ),
+    }));
+  const setSectionShadingMode = (cueId: string, mode: ProfileShadingMode) =>
+    patchSectionCue(cueId, { profileShading: mode, colorByGrade: mode === "grade" });
+  const addManualShadingSegment = (cue: SectionCue) => {
+    const minSpan = Math.min(0.1, Math.max(0.01, (cue.endKm - cue.startKm) / 4));
+    const sorted = [...(cue.manualShadingSegments ?? [])]
+      .map((segment) => ({
+        startKm: clamp(Math.min(segment.startKm, segment.endKm), cue.startKm, cue.endKm),
+        endKm: clamp(Math.max(segment.startKm, segment.endKm), cue.startKm, cue.endKm),
+      }))
+      .sort((a, b) => a.startKm - b.startKm);
+    let startKm = cue.startKm;
+    let endKm = cue.endKm;
+    let cursor = cue.startKm;
+
+    for (const segment of sorted) {
+      if (segment.startKm - cursor >= minSpan) {
+        startKm = cursor;
+        endKm = segment.startKm;
+        break;
+      }
+      cursor = Math.max(cursor, segment.endKm);
+    }
+    if (startKm === cue.startKm && endKm === cue.endKm && cursor < cue.endKm) {
+      startKm = cursor;
+      endKm = cue.endKm;
+    }
+
+    patchSectionCue(cue.id, {
+      manualShadingSegments: [
+        ...(cue.manualShadingSegments ?? []),
+        { id: id(), startKm, endKm, color: "moderate" },
+      ],
+    });
+  };
+  const addManualShadingSegmentFromRange = (
+    cue: SectionCue,
+    startDistanceKm: number,
+    endDistanceKm: number,
+  ) => {
+    const minSpan = 0.01;
+    const startKm = clamp(
+      Math.min(startDistanceKm, endDistanceKm),
+      cue.startKm,
+      cue.endKm,
+    );
+    const endKm = clamp(
+      Math.max(startDistanceKm, endDistanceKm),
+      cue.startKm,
+      cue.endKm,
+    );
+    if (endKm - startKm < minSpan) return;
+    patchSectionCue(cue.id, {
+      profileShading: "manual",
+      colorByGrade: false,
+      manualShadingSegments: [
+        ...(cue.manualShadingSegments ?? []),
+        { id: id(), startKm, endKm, color: "moderate" },
+      ],
+    });
+    setShadingModalMarkers([]);
+  };
+  const updateManualShadingSegment = (
+    cue: SectionCue,
+    segmentId: string,
+    patch: Partial<{ startKm: number; endKm: number; color: ProfileShadeColor }>,
+  ) => {
+    const minSpan = 0.01;
+    patchSectionCue(cue.id, {
+      manualShadingSegments: (cue.manualShadingSegments ?? []).map((segment) => {
+        if (segment.id !== segmentId) return segment;
+        const next = { ...segment, ...patch };
+        const startKm = clamp(next.startKm, cue.startKm, cue.endKm - minSpan);
+        const endKm = clamp(Math.max(next.endKm, startKm + minSpan), startKm + minSpan, cue.endKm);
+        return { ...next, startKm, endKm };
+      }),
+    });
+  };
+  const removeManualShadingSegment = (cue: SectionCue, segmentId: string) =>
+    patchSectionCue(cue.id, {
+      manualShadingSegments: (cue.manualShadingSegments ?? []).filter(
+        (segment) => segment.id !== segmentId,
+      ),
+    });
   const removeSelected = () => {
     setProject((current) => ({
       ...current,
@@ -298,10 +454,79 @@ export default function App() {
     }));
     setSelectedId(undefined);
   };
-  const pickDistance = useCallback(
-    (distanceKm: number) => setPickedKm(distanceKm),
+  useEffect(() => {
+    if (shadingModalCueId && !shadingModalCue) setShadingModalCueId(undefined);
+  }, [shadingModalCueId, shadingModalCue]);
+  useEffect(() => {
+    setShadingModalMarkers([]);
+    setShadingModalHoveredKm(undefined);
+  }, [shadingModalCueId]);
+  const selectMarkerDistance = useCallback(
+    (distanceKm: number) => {
+      setPickedKm(distanceKm);
+      setMarkerDistances((markers) => addMarkerDistance(markers, distanceKm));
+    },
     [],
   );
+  const clearMarkerDistances = useCallback(() => setMarkerDistances([]), []);
+  const selectShadingModalDistance = useCallback((cue: SectionCue, distanceKm: number) => {
+    const selectedKm = clamp(distanceKm, cue.startKm, cue.endKm);
+    setShadingModalMarkers((markers) => addMarkerDistance(markers, selectedKm));
+  }, []);
+  const clearShadingModalMarkers = useCallback(() => {
+    setShadingModalMarkers([]);
+    setShadingModalHoveredKm(undefined);
+  }, []);
+  const startLeftPanelResize = useCallback(
+    (event: PointerEvent<HTMLButtonElement>) => {
+      const startX = event.clientX;
+      const startWidth = leftPanelWidth;
+      const originalCursor = document.body.style.cursor;
+      const originalUserSelect = document.body.style.userSelect;
+
+      const move = (moveEvent: globalThis.PointerEvent) => {
+        setLeftPanelWidth(
+          clampLeftPanelWidth(startWidth + moveEvent.clientX - startX),
+        );
+      };
+      const stop = () => {
+        document.body.style.cursor = originalCursor;
+        document.body.style.userSelect = originalUserSelect;
+        window.removeEventListener("pointermove", move);
+        window.removeEventListener("pointerup", stop);
+        window.removeEventListener("pointercancel", stop);
+      };
+
+      event.preventDefault();
+      document.body.style.cursor = "col-resize";
+      document.body.style.userSelect = "none";
+      window.addEventListener("pointermove", move);
+      window.addEventListener("pointerup", stop);
+      window.addEventListener("pointercancel", stop);
+    },
+    [leftPanelWidth],
+  );
+  const resizeLeftPanelWithKeyboard = (
+    event: KeyboardEvent<HTMLButtonElement>,
+  ) => {
+    const step = event.shiftKey ? 40 : 16;
+    if (event.key === "ArrowLeft" || event.key === "ArrowRight") {
+      event.preventDefault();
+      setLeftPanelWidth((width) =>
+        clampLeftPanelWidth(
+          width + (event.key === "ArrowRight" ? step : -step),
+        ),
+      );
+    }
+    if (event.key === "Home") {
+      event.preventDefault();
+      setLeftPanelWidth(LEFT_PANEL_MIN_WIDTH);
+    }
+    if (event.key === "End") {
+      event.preventDefault();
+      setLeftPanelWidth(LEFT_PANEL_MAX_WIDTH);
+    }
+  };
 
   const reorder = (fromId: string, toId: string) => {
     setProject((current) => {
@@ -523,7 +748,7 @@ export default function App() {
           </div>
         </main>
       ) : (
-        <main className="workspace" id="top">
+        <main className="workspace" id="top" style={workspaceStyle}>
           <aside className="left-panel">
             <section className="route-summary">
               <div className="section-kicker">
@@ -561,45 +786,67 @@ export default function App() {
               <RouteMap
                 route={project.route}
                 cues={project.cues}
-                onPick={pickDistance}
+                onPick={selectMarkerDistance}
+                onHover={setHoveredKm}
+                onClearSelections={clearMarkerDistances}
+                hoverDistanceKm={hoveredKm}
+                selectedDistancesKm={markerDistances}
               />
               <ElevationProfile
                 route={project.route}
                 cues={project.cues}
                 units={project.sheet.units}
-                onPick={pickDistance}
+                onPick={selectMarkerDistance}
+                onHover={setHoveredKm}
+                onClearSelections={clearMarkerDistances}
+                hoverDistanceKm={hoveredKm}
+                selectedDistancesKm={markerDistances}
               />
               <div className="pick-readout">
-                Selected distance{" "}
-                <strong>{formatDistance(pickedKm, project.sheet.units)}</strong>
+                {markerDistances.length ? `${markerDistances.length} selected` : "Selected distance"}{" "}
+                <strong>{formatDistance(markerDistances.at(-1) ?? pickedKm, project.sheet.units)}</strong>
               </div>
             </section>
-            <section className="add-cues">
-              <h3>Add to sheet</h3>
-              <div>
-                <button onClick={addSection}>
+            <section className="cue-dock add-cues">
+              <div className="cue-dock-heading">
+                <div className="section-kicker">
+                  <Plus /> Add cue
+                </div>
+                <div className="cue-dock-distance">
+                  Picked <strong>{formatDistance(markerDistances.at(-1) ?? pickedKm, project.sheet.units)}</strong>
+                </div>
+              </div>
+              <div className="cue-dock-actions">
+                <button className="cue-dock-action" onClick={addSection}>
                   <Mountain />
-                  <span>
-                    <strong>Section</strong>
-                    <small>Climb, attack or key segment</small>
-                  </span>
+                  <strong>Section</strong>
+                  <small>Climb, attack or key segment</small>
                 </button>
-                <button onClick={addRouteProfile}>
+                <button className="cue-dock-action" onClick={addRouteProfile}>
                   <AreaChart />
-                  <span>
-                    <strong>Route profile</strong>
-                    <small>Whole-route elevation profile</small>
-                  </span>
+                  <strong>Route profile</strong>
+                  <small>Whole-route elevation profile</small>
                 </button>
-                <button onClick={addPoint}>
+                <button className="cue-dock-action" onClick={addPoint}>
                   <CircleDot />
-                  <span>
-                    <strong>Point</strong>
-                    <small>Aid, water or hazard</small>
-                  </span>
+                  <strong>Point</strong>
+                  <small>Aid, water or hazard</small>
                 </button>
               </div>
             </section>
+            <button
+              className="left-panel-resizer"
+              type="button"
+              aria-label="Resize route sidebar"
+              aria-orientation="vertical"
+              aria-valuemin={LEFT_PANEL_MIN_WIDTH}
+              aria-valuemax={LEFT_PANEL_MAX_WIDTH}
+              aria-valuenow={leftPanelWidth}
+              role="separator"
+              title="Resize route sidebar"
+              onPointerDown={startLeftPanelResize}
+              onKeyDown={resizeLeftPanelWithKeyboard}
+            />
           </aside>
 
           <section className="canvas-panel">
@@ -774,17 +1021,36 @@ export default function App() {
                       />
                       <span>Show distance unit ({project.sheet.units === "metric" ? "km" : "mi"})</span>
                     </label>
-                    <label className="grade-option">
-                      <input
-                        type="checkbox"
-                        checked={selected.colorByGrade ?? false}
-                        onChange={(e) =>
-                          patchCue({ colorByGrade: e.target.checked })
-                        }
-                      />
-                      <span>Color elevation by grade</span>
-                    </label>
-                    {selected.colorByGrade && (
+                    <fieldset className="shading-mode-field">
+                      <legend>Profile shading</legend>
+                      <div className="shading-mode-options">
+                        {([
+                          ["none", "None"],
+                          ["grade", "By grade"],
+                          ["manual", "Manual"],
+                        ] as [ProfileShadingMode, string][]).map(([mode, label]) => (
+                          <label className="grade-option" key={mode}>
+                            <input
+                              type="radio"
+                              name={`profile-shading-${selected.id}`}
+                              checked={sectionShadingMode(selected) === mode}
+                              onChange={() => setSectionShadingMode(selected.id, mode)}
+                            />
+                            <span>{label}</span>
+                          </label>
+                        ))}
+                      </div>
+                    </fieldset>
+                    {sectionShadingMode(selected) === "manual" && (
+                      <button
+                        type="button"
+                        className="button secondary custom-shading-button"
+                        onClick={() => setShadingModalCueId(selected.id)}
+                      >
+                        Custom profile shading
+                      </button>
+                    )}
+                    {sectionShadingMode(selected) === "grade" && (
                       <>
                         <label>
                           Red zone starts at (%)
@@ -1033,6 +1299,197 @@ export default function App() {
             )}
           </aside>
         </main>
+      )}
+      {shadingModalCue && (
+        <div className="modal-backdrop" role="presentation">
+          <section
+            className="shading-modal"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="custom-shading-title"
+          >
+            <div className="shading-modal-head">
+              <div>
+                <span className="section-kicker">Profile shading</span>
+                <h2 id="custom-shading-title">Custom segments</h2>
+                <p>
+                  Color distance ranges on {shadingModalCue.title || "this section"}.
+                </p>
+              </div>
+              <button
+                type="button"
+                className="icon-button"
+                aria-label="Close custom shading"
+                onClick={() => setShadingModalCueId(undefined)}
+              >
+                <X />
+              </button>
+            </div>
+            <div className="shading-modal-preview">
+              {project.route?.hasElevation ? (
+                <div className="shading-profile-preview">
+                  <MiniProfile route={project.route} cue={shadingModalCue} cues={project.cues} />
+                </div>
+              ) : (
+                <div className="profile-missing">
+                  <span>Elevation unavailable</span>
+                  <p>Custom profile shading requires elevation data.</p>
+                </div>
+              )}
+            </div>
+            {project.route && (
+              <div className="shading-modal-workbench">
+                <div className="shading-modal-map-panel">
+                  <div className="shading-panel-title">
+                    <MapIcon /> Segment map
+                  </div>
+                  <RouteMap
+                    route={project.route}
+                    cues={[]}
+                    onPick={(distanceKm) => selectShadingModalDistance(shadingModalCue, distanceKm)}
+                    onHover={setShadingModalHoveredKm}
+                    onClearSelections={clearShadingModalMarkers}
+                    hoverDistanceKm={shadingModalHoveredKm}
+                    selectedDistancesKm={shadingModalMarkers}
+                    rangeStartKm={shadingModalCue.startKm}
+                    rangeEndKm={shadingModalCue.endKm}
+                  />
+                </div>
+                <div className="shading-modal-profile-panel">
+                  <div className="shading-panel-title">
+                    <AreaChart /> Segment profile
+                  </div>
+                  {project.route.hasElevation ? (
+                    <ElevationProfile
+                      route={project.route}
+                      cues={[]}
+                      units={project.sheet.units}
+                      onPick={(distanceKm) => selectShadingModalDistance(shadingModalCue, distanceKm)}
+                      onRangePick={(startKm, endKm) =>
+                        addManualShadingSegmentFromRange(shadingModalCue, startKm, endKm)
+                      }
+                      onHover={setShadingModalHoveredKm}
+                      onClearSelections={clearShadingModalMarkers}
+                      hoverDistanceKm={shadingModalHoveredKm}
+                      selectedDistancesKm={shadingModalMarkers}
+                      rangeStartKm={shadingModalCue.startKm}
+                      rangeEndKm={shadingModalCue.endKm}
+                      dragBehavior="segment"
+                      showFill={false}
+                    />
+                  ) : (
+                    <div className="profile-missing">
+                      <span>Elevation unavailable</span>
+                      <p>Custom profile shading requires elevation data.</p>
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
+            <div className="shading-modal-toolbar">
+              <div className="shading-modal-actions">
+                <button
+                  type="button"
+                  className="button primary"
+                  onClick={() => addManualShadingSegment(shadingModalCue)}
+                  disabled={!project.route?.hasElevation || shadingModalCue.endKm <= shadingModalCue.startKm}
+                >
+                  <Plus /> Add segment
+                </button>
+                <button
+                  type="button"
+                  className="button secondary"
+                  onClick={() => {
+                    const [startKm, endKm] = [...shadingModalMarkers].sort((a, b) => a - b);
+                    addManualShadingSegmentFromRange(shadingModalCue, startKm, endKm);
+                  }}
+                  disabled={!project.route?.hasElevation || shadingModalMarkers.length !== 2}
+                >
+                  <CircleDot /> Add from selection
+                </button>
+              </div>
+              <span>
+                {shadingModalMarkers.length
+                  ? `${shadingModalMarkers.length} selected - ${formatDistance(
+                      shadingModalMarkers.at(-1) ?? shadingModalCue.startKm,
+                      project.sheet.units,
+                    )}`
+                  : `${formatDistance(shadingModalCue.startKm, project.sheet.units)} - ${formatDistance(
+                      shadingModalCue.endKm,
+                      project.sheet.units,
+                    )}`}
+              </span>
+            </div>
+            {shadingModalCue.manualShadingSegments?.length ? (
+              <div className="manual-segment-list">
+                {[...shadingModalCue.manualShadingSegments]
+                  .sort((a, b) => a.startKm - b.startKm)
+                  .map((segment, index) => (
+                    <div className="manual-segment-row" key={segment.id}>
+                      <span className="manual-segment-number">{index + 1}</span>
+                      <label>
+                        Start
+                        <DistanceInput
+                          distanceKm={segment.startKm}
+                          units={project.sheet.units}
+                          onCommit={(startKm) =>
+                            updateManualShadingSegment(shadingModalCue, segment.id, {
+                              startKm,
+                            })
+                          }
+                        />
+                      </label>
+                      <label>
+                        End
+                        <DistanceInput
+                          distanceKm={segment.endKm}
+                          units={project.sheet.units}
+                          onCommit={(endKm) =>
+                            updateManualShadingSegment(shadingModalCue, segment.id, {
+                              endKm,
+                            })
+                          }
+                        />
+                      </label>
+                      <label>
+                        Color
+                        <span className="segment-color-select">
+                          <i style={{ background: gradeColors[segment.color].hex }} />
+                          <select
+                            value={segment.color}
+                            onChange={(event) =>
+                              updateManualShadingSegment(shadingModalCue, segment.id, {
+                                color: event.target.value as ProfileShadeColor,
+                              })
+                            }
+                          >
+                            {PROFILE_SHADE_COLORS.map((color) => (
+                              <option key={color} value={color}>
+                                {color}
+                              </option>
+                            ))}
+                          </select>
+                        </span>
+                      </label>
+                      <button
+                        type="button"
+                        className="icon-button danger"
+                        aria-label={`Remove segment ${index + 1}`}
+                        onClick={() => removeManualShadingSegment(shadingModalCue, segment.id)}
+                      >
+                        <Trash2 />
+                      </button>
+                    </div>
+                  ))}
+              </div>
+            ) : (
+              <div className="manual-segment-empty">
+                <strong>No manual segments yet.</strong>
+                <span>Add a segment to color a distance range on this section.</span>
+              </div>
+            )}
+          </section>
+        </div>
       )}
     </div>
   );
