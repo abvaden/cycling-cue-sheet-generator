@@ -161,7 +161,8 @@ button:disabled { cursor: not-allowed; opacity: .45; }
 .cue-card p.bold-note { font-weight: 750; }
 .profile-composition { position: relative; min-height: 16px; flex: 1 1 auto; display: flex; overflow: hidden; }.profile-composition .mini-profile { margin-top: 4px; }.profile-composition.with-overlay .mini-profile { position: absolute; inset: 0; height: 100%; margin: 0; }.profile-overlay-copy { position: relative; z-index: 1; align-self: flex-start; display: grid; justify-items: start; gap: 3px; max-width: 88%; margin: 5px; }.profile-overlay-copy > * { margin: 0 !important; padding: 2px 4px; background: transparent; }
 .mini-profile { width: 100%; height: auto; min-height: 16px; flex: 1 1 auto; margin-top: 4px; border-bottom: 1px solid var(--ink); }
-.mini-profile polygon:not(.grade-fill):not(.section-shade):not(.manual-fill) { fill: color-mix(in oklch, var(--red), transparent 89%); }.mini-profile polygon.grade-fill { opacity: .28; }.mini-profile polygon.manual-fill { opacity: .34; }.mini-profile polyline, .mini-profile line { fill: none; stroke-width: 1.5; vector-effect: non-scaling-stroke; }.mini-profile polyline { stroke: var(--red); }.mini-profile .section-shade { opacity: .4; }.mini-profile .point-marker { stroke: var(--ink); stroke-width: 1; stroke-dasharray: 3 2; }
+/* mini-profile SVG shapes are painted via inline attributes in SheetCanvas.tsx
+   (fill/opacity/stroke) so the PDF export can rasterize them — see PROFILE_RED. */
 .canvas-help { margin: 23px auto 0; max-width: 560px; color: var(--muted); text-align: center; font-size: 10px; }
 
 .inspector label { display: grid; gap: 5px; margin-top: 13px; font-size: 9px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); }

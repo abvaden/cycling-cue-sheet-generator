@@ -10,6 +10,14 @@ interface Props {
   onSelect: (id: string) => void
 }
 
+// --red / --ink as concrete sRGB. The mini-profile shapes paint themselves via
+// inline SVG attributes rather than CSS because the PDF export (html-to-image)
+// does not apply CSS rules to SVG child elements: CSS `fill` rasterizes as black,
+// and CSS `opacity`/`stroke`/`stroke-width` are dropped. oklch() paint also fails
+// to rasterize in that pipeline, so these must be sRGB hex, not var(--red).
+const PROFILE_RED = '#b00a1d'
+const PROFILE_INK = '#271c19'
+
 export function MiniProfile({ route, cue, cues }: { route: Route; cue: Extract<Cue, { kind: 'section' }>; cues: Cue[] }) {
   const routePoints = route.points.filter((point) => point.elevation !== undefined)
   const points = profilePointsInRange(routePoints, cue.startKm, cue.endKm)
@@ -56,7 +64,7 @@ export function MiniProfile({ route, cue, cues }: { route: Route; cue: Extract<C
         if (within.length < 2) return []
         const color = colorForClimb((within.at(-1)!.elevation ?? 0) - (within[0].elevation ?? 0), within.at(-1)!.distanceKm - within[0].distanceKm).hex
         const shape = within.map(toCoordinate).map(({ x, y }) => `${x},${y}`).join(' ')
-        return [<polygon className="section-shade" key={`shade-${item.id}`} style={{ fill: color }} points={`${xForKm(within[0].distanceKm)},100 ${shape} ${xForKm(within.at(-1)!.distanceKm)},100`} />]
+        return [<polygon className="section-shade" key={`shade-${item.id}`} fill={color} fillOpacity={0.4} points={`${xForKm(within[0].distanceKm)},100 ${shape} ${xForKm(within.at(-1)!.distanceKm)},100`} />]
       })
     : []
   const manualFills = profileShading === 'manual'
@@ -76,21 +84,21 @@ export function MiniProfile({ route, cue, cues }: { route: Route; cue: Extract<C
         if (item.kind !== 'point') return []
         const x = xForKm(item.distanceKm)
         if (x < 0 || x > 100) return []
-        return [<line className="point-marker" key={`point-${item.id}`} x1={x} x2={x} y1="0" y2="100" />]
+        return [<line className="point-marker" key={`point-${item.id}`} x1={x} x2={x} y1="0" y2="100" fill="none" stroke={PROFILE_INK} strokeWidth={1} strokeDasharray="3 2" vectorEffect="non-scaling-stroke" />]
       })
     : []
   const baseFills = profileShading === 'grade'
-    ? gradeFills.map(({ points, color }, index) => <polygon className="grade-fill" key={`fill-${index}`} points={points} fill={color} />)
+    ? gradeFills.map(({ points, color }, index) => <polygon className="grade-fill" key={`fill-${index}`} points={points} fill={color} fillOpacity={0.28} />)
     : profileShading === 'manual'
     ? null
     : isCourseProfile
     ? null
-    : <polygon points={`0,100 ${polyline} 100,100`} />
-  const manualFillEls = manualFills.map(({ id, points, color }) => <polygon className="manual-fill" key={`manual-fill-${id}`} points={points} fill={color} />)
+    : <polygon points={`0,100 ${polyline} 100,100`} fill={PROFILE_RED} fillOpacity={0.11} />
+  const manualFillEls = manualFills.map(({ id, points, color }) => <polygon className="manual-fill" key={`manual-fill-${id}`} points={points} fill={color} fillOpacity={0.34} />)
   const baseLines = profileShading === 'grade'
-    ? gradeFills.map(({ top, color }, index) => <polyline key={`line-${index}`} points={top} style={{ stroke: color }} />)
-    : <polyline points={polyline} />
-  const manualLines = manualFills.map(({ id, top, color }) => <polyline className="manual-line" key={`manual-line-${id}`} points={top} style={{ stroke: color }} />)
+    ? gradeFills.map(({ top, color }, index) => <polyline key={`line-${index}`} points={top} fill="none" stroke={color} strokeWidth={1.5} vectorEffect="non-scaling-stroke" />)
+    : <polyline points={polyline} fill="none" stroke={PROFILE_RED} strokeWidth={1.5} vectorEffect="non-scaling-stroke" />
+  const manualLines = manualFills.map(({ id, top, color }) => <polyline className="manual-line" key={`manual-line-${id}`} points={top} fill="none" stroke={color} strokeWidth={1.5} vectorEffect="non-scaling-stroke" />)
   return <svg className="mini-profile" viewBox="0 0 100 100" preserveAspectRatio="none">{baseFills}{sectionShades}{manualFillEls}{baseLines}{manualLines}{pointMarkers}</svg>
 }
 
